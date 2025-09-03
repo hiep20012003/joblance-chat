@@ -15,15 +15,19 @@ import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
 import jwt, { JwtPayload } from 'jsonwebtoken';
+import { Channel } from 'amqplib';
+import { Server } from 'socket.io';
 import { config } from '@chat/config';
+import { createConnection } from '@chat/queues/connection';
 
 import { appRoutes } from './routes';
 
 const SERVER_PORT = config.PORT || 4003;
-// export let authChannel:Channel
+//let chatChannel:Channel;
 export class ChatServer {
   private app: Application;
-
+  private socketIO?: Server;
+  private chatChannel?: Channel;
   constructor(app: Application) {
     this.app = app;
   }
@@ -72,7 +76,7 @@ export class ChatServer {
   }
 
   private async startQueues(): Promise<void> {
-    // authChannel = (await createConnection()) as Channel;
+    this.chatChannel = (await createConnection()) as Channel;
   }
 
   private startRedis() {
@@ -82,7 +86,6 @@ export class ChatServer {
   private errorHandler(app: Application): void {
     app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
       const operation = 'server:handle-error';
-
       AppLogger.error(
         `API ${req.originalUrl} unexpected error`,
         {
@@ -144,9 +147,10 @@ export class ChatServer {
     try {
       const httpServer: http.Server = new http.Server(app);
       this.startHttpServer(httpServer);
+      this.createSocketIO(httpServer);
     } catch (error) {
       throw new ServerError({
-        clientMessage: 'Failed to start Auth Service server',
+        clientMessage: 'Failed to start Chat Service server',
         cause: error,
         operation: 'server:error'
       });
@@ -155,10 +159,10 @@ export class ChatServer {
 
   private startHttpServer(httpServer: http.Server): void {
     try {
-      AppLogger.info(`Auth server started with process id ${process.pid}`, { operation: 'server:http-start' });
+      AppLogger.info(`Chat server started with process id ${process.pid}`, { operation: 'server:http-start' });
 
       httpServer.listen(SERVER_PORT, () => {
-        AppLogger.info(`Auth server is running on port ${SERVER_PORT}`, { operation: 'server:http-listening' });
+        AppLogger.info(`Chat server is running on port ${SERVER_PORT}`, { operation: 'server:http-listening' });
       });
     } catch (error) {
       throw new DependencyError({
@@ -167,5 +171,22 @@ export class ChatServer {
         operation: 'server:bind-error'
       });
     }
+
+  }
+  private createSocketIO(httpServer: http.Server): void {
+    this.socketIO = new Server(httpServer, {
+      cors: {
+        origin: '*',
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+      }
+    });
+
+    this.socketIO.on('connection', (socket) => {
+      AppLogger.info(`New socket connected: ${socket.id}`, { operation: 'socket:connection' });
+
+      socket.on('disconnect', () => {
+        AppLogger.info(`Socket disconnected: ${socket.id}`, { operation: 'socket:disconnect' });
+      });
+    });
   }
 }

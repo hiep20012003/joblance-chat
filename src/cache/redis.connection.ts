@@ -1,6 +1,6 @@
 
-import { config } from '@base/config';
-import { AppLogger } from '@base/utils/logger';
+import { config } from '@chat/config';
+import { AppLogger } from '@chat/utils/logger';
 import { RedisClient } from '@hiep20012003/joblance-shared';
 
 export class CacheStore extends RedisClient {

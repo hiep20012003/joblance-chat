@@ -1,5 +1,5 @@
 {
-  "name": "base-service",
+  "name": "jobber-chat",
   "version": "1.0.0",
   "main": "app.js",
   "scripts": {
@@ -21,25 +21,34 @@
     "seed:create": "dotenv -- node scripts/seed create --folder src/db/seeders"
   },
   "dependencies": {
+    "amqplib": "^0.10.9",
+    "cloudinary": "^2.7.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "helmet": "^8.1.0",
     "hpp": "^0.2.3",
     "http-status-codes": "^2.3.0",
+    "joi": "^18.0.1",
     "jsonwebtoken": "^9.0.2",
-    "tslib": "^2.8.1"
+    "mongoose": "^8.18.0",
+    "socket.io": "^4.8.1",
+    "tslib": "^2.8.1",
+    "winston": "^3.17.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
     "@stylistic/eslint-plugin": "^5.1.0",
+    "@types/amqplib": "^0.10.7",
     "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/estree": "^1.0.7",
     "@types/express": "^5.0.3",
     "@types/helmet": "^0.0.48",
     "@types/hpp": "^0.2.6",
+    "@types/joi": "^17.2.2",
     "@types/jsonwebtoken": "^9.0.10",
+    "@types/mongoose": "^5.11.96",
     "@types/node": "^22.16.3",
     "@typescript-eslint/eslint-plugin": "^8.36.0",
     "@typescript-eslint/parser": "^8.36.0",
