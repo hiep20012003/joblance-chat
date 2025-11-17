@@ -1,4 +1,4 @@
-import { HealthController } from '@chat/controllers/health.controller';
+import { HealthController } from '@chats/controllers/health.controller';
 import express, { Router } from 'express';
 
 class HealthRoutes {
@@ -8,7 +8,7 @@ class HealthRoutes {
   }
 
   public routes(): Router {
-    this.router.get('/gateway-health', new HealthController().health);
+    this.router.get('/health', new HealthController().health);
     return this.router;
   }
 }

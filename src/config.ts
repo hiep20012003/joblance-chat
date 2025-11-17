@@ -1,29 +1,56 @@
-import dotenv from 'dotenv';
+import path from 'path';
 
-dotenv.config({ path: `.env.${process.env.ENVIRONMENT || 'dev'}` });
+import dotenv from 'dotenv';
+import cloudinary from 'cloudinary';
+
+dotenv.config({
+  path: path.resolve(
+    process.cwd(),
+    `.env.${process.env.NODE_ENV || 'development'}`
+  ),
+});
 
 class Config {
-  public GATEWAY_JWT_TOKEN: string;
-  public PORT: string;
-  public JWT_TOKEN: string;
-  public NODE_ENV: string;
-  public API_GATEWAY_URL: string;
-  public CLIENT_URL: string;
-  public ELASTIC_SEARCH_URL: string;
-  public REDIS_HOST: string;
-  public RABBITMQ_ENDPOINT: string | undefined;
+  // Application
+  public NODE_ENV: string = process.env.NODE_ENV || 'development';
+  public PORT: number = parseInt(process.env.PORT || '4006', 10);
 
-  constructor() {
-    this.GATEWAY_JWT_TOKEN = process.env.GATEWAY_JWT_TOKEN || '';
-    this.PORT = process.env.PORT || '';
-    this.JWT_TOKEN = process.env.JWT_TOKEN || '';
-    this.NODE_ENV = process.env.NODE_ENV || '';
-    this.API_GATEWAY_URL = process.env.API_GATEWAY_URL || '';
-    this.CLIENT_URL = process.env.CLIENT_URL || '';
-    this.ELASTIC_SEARCH_URL = process.env.ELASTIC_SEARCH_URL || '';
-    this.REDIS_HOST = process.env.REDIS_HOST || '';
-    this.RABBITMQ_ENDPOINT = process.env.RABBITMQ_ENDPOINT || '';
+  // Gateway
+  public API_GATEWAY_URL: string = process.env.API_GATEWAY_URL || 'http://localhost:4000';
+  public CLIENT_URL: string = process.env.CLIENT_URL || 'http://localhost:3000';
+
+  // Database (MongoDB)
+  public DATABASE_URL: string =
+    process.env.DATABASE_URL || '';
+
+  // Messaging / RabbitMQ
+  public RABBITMQ_URL: string =
+    process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
+
+  public REDIS_URL: string =
+    process.env.REDIS_URL || 'amqp://guest:guest@localhost:5672';
+
+  // Gateway secret for internal JWT
+  public GATEWAY_SECRET_KEY: string = process.env.GATEWAY_SECRET_KEY || '';
+
+  // Cloudinary
+  public CLOUDINARY_CLOUD_NAME: string = process.env.CLOUD_NAME || '';
+  public CLOUDINARY_API_KEY: string = process.env.CLOUD_API_KEY || '';
+  public CLOUDINARY_API_SECRET: string = process.env.CLOUD_API_SECRET || '';
+
+  // APM
+  public ENABLE_APM: boolean = process.env.ENABLE_APM === '1';
+  public ELASTIC_APM_SERVER_URL: string = process.env.ELASTIC_APM_SERVER_URL || '';
+  public ELASTIC_APM_SECRET_TOKEN: string = process.env.ELASTIC_APM_SECRET_TOKEN || '';
+
+  public cloudinaryConfig(): void {
+    cloudinary.v2.config({
+      cloud_name: this.CLOUDINARY_CLOUD_NAME,
+      api_key: this.CLOUDINARY_API_KEY,
+      api_secret: this.CLOUDINARY_API_SECRET,
+      secure: true
+    });
   }
 }
 
-export const config: Config = new Config();
+export const config = new Config();

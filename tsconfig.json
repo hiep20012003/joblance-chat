@@ -1,32 +1,41 @@
 {
   "compilerOptions": {
-    "target": "ES2015",
-    "lib": ["dom", "ES2015"],
-    "module": "commonjs",
-    "baseUrl": ".",
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": [
+      "ES2022"
+    ],
+    "rootDir": "./src",
     "outDir": "./build",
-    "rootDir": ".",
+    "baseUrl": "./src",
+    "sourceMap": true,
+    "declaration": true,
     "strict": true,
     "noImplicitAny": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "moduleResolution": "node",
     "esModuleInterop": true,
-    "sourceMap": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "importHelpers": true,
     "alwaysStrict": true,
+    "forceConsistentCasingInFileNames": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "forceConsistentCasingInFileNames": true,
-    "allowSyntheticDefaultImports": true,
-    "pretty": true,
-    "resolveJsonModule": true,
-    "plugins": [
-      { "transform": "typescript-transform-paths" },
-      { "transform": "typescript-transform-paths", "afterDeclarations": true },
-    ],
+    "skipLibCheck": true,
     "paths": {
-      "@chat/*": ["src/*"],
-      //"@hiep20012003/jobliance-shared": ["../joblance-shared"]
+      "@chats/*": [
+        "*"
+      ]
     }
-  }
+  },
+  "include": [
+    "./src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "build",
+    "dist"
+  ]
 }

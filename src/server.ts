@@ -1,6 +1,6 @@
 import http from 'http';
 
-import { AppLogger } from '@chat/utils/logger';
+import { AppLogger } from '@chats/utils/logger';
 import { Application, json, NextFunction, urlencoded, Request, Response } from 'express';
 import {
   ApplicationError,
@@ -14,30 +14,39 @@ import hpp from 'hpp';
 import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
-import jwt, { JwtPayload } from 'jsonwebtoken';
-import { Channel } from 'amqplib';
-import { Server } from 'socket.io';
-import { config } from '@chat/config';
-import { createConnection } from '@chat/queues/connection';
-
-import { appRoutes } from './routes';
+import { config } from '@chats/config';
+import { initQueue } from '@chats/queues/connection';
+import { appRoutes } from '@chats/routes';
+import { database } from '@chats/database/connection';
+import { ChatsSocket } from '@chats/sockets/socket';
 
 const SERVER_PORT = config.PORT || 4003;
 //let chatChannel:Channel;
-export class ChatServer {
-  private app: Application;
-  private socketIO?: Server;
-  private chatChannel?: Channel;
+export class ChatsServer {
+  private readonly app: Application;
+  private static socket: ChatsSocket;
+
   constructor(app: Application) {
     this.app = app;
   }
 
+  public static getSocketIO() {
+    if (!this.socket) {
+      throw new ServerError({
+        clientMessage: 'Socket.IO not initialized',
+        operation: 'sockets:connection'
+      });
+    }
+    return this.socket;
+  }
+
   public async start(): Promise<void> {
+    await database.connect();
+    await this.startQueues();
 
     this.securityMiddleware(this.app);
-    this.standarMiddleware(this.app);
+    this.standardMiddleware(this.app);
     this.routesMiddleware(this.app);
-    await this.startQueues();
     this.startRedis();
     this.errorHandler(this.app);
     this.startServer(this.app);
@@ -54,18 +63,9 @@ export class ChatServer {
         methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
       })
     );
-
-    app.use((req: Request, _res: Response, next: NextFunction) => {
-      if (req.headers.authorization) {
-        const token = req.headers.authorization.split(' ')[1];
-        const payload = jwt.decode(token);
-        req.currentUser = payload as JwtPayload;
-      }
-      next();
-    });
   }
 
-  private standarMiddleware(app: Application): void {
+  private standardMiddleware(app: Application): void {
     app.use(compression());
     app.use(json({ limit: '200mb' }));
     app.use(urlencoded({ extended: true, limit: '200mb' }));
@@ -76,7 +76,7 @@ export class ChatServer {
   }
 
   private async startQueues(): Promise<void> {
-    this.chatChannel = (await createConnection()) as Channel;
+    await initQueue();
   }
 
   private startRedis() {
@@ -89,7 +89,6 @@ export class ChatServer {
       AppLogger.error(
         `API ${req.originalUrl} unexpected error`,
         {
-          req,
           operation,
           error: err instanceof ApplicationError ? err.serialize() : {
             name: (err as Error).name,
@@ -102,8 +101,8 @@ export class ChatServer {
       if (err instanceof ApplicationError) {
         new ErrorResponse({
           ...err.serializeForClient() as ResponseOptions,
-          error: new RegExp('validate', 'i').test(err?.operation as string) ? err.context : undefined
-        }).send(res);
+
+        }).send(res, true);
       } else {
         const serverError = new ServerError({
           clientMessage: 'Internal server error',
@@ -112,7 +111,7 @@ export class ChatServer {
         });
         new ErrorResponse({
           ...serverError.serializeForClient() as ResponseOptions
-        }).send(res);
+        }).send(res, true);
       }
     });
 
@@ -128,7 +127,6 @@ export class ChatServer {
       AppLogger.error(
         `API ${req.originalUrl} route not found`,
         {
-          req,
           operation,
           error: err instanceof ApplicationError ? err.serialize() : {
             name: (err as Error).name,
@@ -139,7 +137,7 @@ export class ChatServer {
       );
       new ErrorResponse({
         ...err.serializeForClient() as ResponseOptions
-      }).send(res);
+      }).send(res, true);
     });
   }
 
@@ -147,7 +145,8 @@ export class ChatServer {
     try {
       const httpServer: http.Server = new http.Server(app);
       this.startHttpServer(httpServer);
-      this.createSocketIO(httpServer);
+      ChatsServer.socket = new ChatsSocket(httpServer);
+      ChatsServer.socket.listen();
     } catch (error) {
       throw new ServerError({
         clientMessage: 'Failed to start Chat Service server',
@@ -172,21 +171,5 @@ export class ChatServer {
       });
     }
 
-  }
-  private createSocketIO(httpServer: http.Server): void {
-    this.socketIO = new Server(httpServer, {
-      cors: {
-        origin: '*',
-        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
-      }
-    });
-
-    this.socketIO.on('connection', (socket) => {
-      AppLogger.info(`New socket connected: ${socket.id}`, { operation: 'socket:connection' });
-
-      socket.on('disconnect', () => {
-        AppLogger.info(`Socket disconnected: ${socket.id}`, { operation: 'socket:disconnect' });
-      });
-    });
   }
 }

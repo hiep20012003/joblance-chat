@@ -1,162 +1,272 @@
-import { ConversationModel } from '@chat/models/conversation.schema';
-import { MessageModel } from '@chat/models/message.schema';
-import { publishDirectMessage } from '@chat/queues/message.producer';
-import { chatChannel, socketIOChatObject } from '@chat/server';
-import { IConversationDocument, IMessageDetails, IMessageDocument, lowerCase } from '@chat/types/chat';
+import crypto from 'crypto';
 
-const createConversation = async (conversationId: string, sender: string, receiver: string): Promise<void> => {
-  await ConversationModel.create({
-    conversationId,
-    senderUsername: sender,
-    receiverUsername: receiver
-  });
-};
+import {ConversationModel} from '@chats/database/models/conversation.model';
+import {MessageModel} from '@chats/database/models/message.model';
+import {
+    uploadCloudinary,
+    UploadFileError,
+    runInTransaction,
+    MessageType,
+    IConversationDocument,
+    IMessageDocument
+} from '@hiep20012003/joblance-shared';
+import {AppLogger} from '@chats/utils/logger';
+import {database} from '@chats/database/connection';
+import {CreateConversationInput, QueryConversationInput} from '@chats/schemas/conversation.schema';
+import {CreateMessageInput, QueryMessageInput} from '@chats/schemas/message.schema';
+import {v4 as uuidv4} from 'uuid';
+import {publishNewMessage, publishReadEvent} from '@chats/utils/helper';
 
-const addMessage = async (data: IMessageDocument): Promise<IMessageDocument> => {
-  const message: IMessageDocument = await MessageModel.create(data) as IMessageDocument;
-  if (data.hasOffer) {
-    const emailMessageDetails: IMessageDetails = {
-      sender: data.senderUsername,
-      amount: `${data.offer?.price}`,
-      buyerUsername: lowerCase(`${data.receiverUsername}`),
-      sellerUsername: lowerCase(`${data.senderUsername}`),
-      title: data.offer?.gigTitle,
-      description: data.offer?.description,
-      deliveryDays: `${data.offer?.deliveryInDays}`,
-      template: 'offer'
+class MessageService {
+
+    // Tạo conversation mới nếu chưa có
+    createConversation = async (payload: CreateConversationInput, file?: Express.Multer.File) => {
+        return runInTransaction(await database.getConnection(), async (session) => {
+            let isNew = true;
+            let conversation = await ConversationModel.findOne({
+                participants: {$all: payload.participants, $size: payload.participants.length}
+            }).session(session);
+
+
+            if (conversation) {
+                isNew = false;
+                AppLogger.warn('Conversation already exists.', {operation: 'chat:create-conversation'});
+            } else {
+                conversation = (await ConversationModel.create([{
+                    _id: uuidv4(),
+                    participants: payload.participants,
+                }], {session}))[0];
+            }
+
+            // --- Logic Upload File ---
+            let uploadedFile;
+            let message: IMessageDocument | null = null;
+            if (payload.message) {
+                const messageData = payload.message;
+                if (messageData.type === MessageType.MEDIA && file) {
+                    const randomBytes: Buffer = crypto.randomBytes(20);
+                    const randomCharacters: string = randomBytes.toString('hex');
+                    uploadedFile = await uploadCloudinary({
+                        file,
+                        publicId: randomCharacters,
+                        resourceType: 'auto',
+                        folder: 'joblance/chats',
+                        downloadable: true
+                    });
+                    if (!uploadedFile.publicId) {
+                        throw new UploadFileError({
+                            clientMessage: 'Upload file error',
+                            operation: 'message:upload-file',
+                            context: {filename: file.originalname}
+                        });
+                    }
+                }
+
+                // Tạo message
+                message = (await MessageModel.create([{
+                    conversationId: conversation._id,
+                    ...messageData,
+                    content: uploadedFile?.secureUrl ? '📎 Attachment' : messageData.content,
+                    attachments: uploadedFile ? [uploadedFile] : undefined
+                }], {session}))[0];
+
+                conversation.set('lastMessage', {
+                    _id: message._id,
+                    content: messageData.type === MessageType.MEDIA ? '📎 Attachment' : message.content,
+                    senderId: message.senderId,
+                    timestamp: message.timestamp, // Sử dụng kiểu Date/String tương ứng
+                });
+
+                conversation.participants.forEach((userId) => {
+                    if (userId !== message?.senderId) {
+                        const currentCount = (conversation.unreadCounts as Map<string, number>).get(userId) || 0;
+                        (conversation.unreadCounts as Map<string, number>).set(userId, currentCount + 1);
+                        conversation.markModified('unreadCounts');
+                    }
+                });
+
+                await conversation.save({session});
+
+                // Emit socket
+                await publishNewMessage({message, conversation, isNewConversation: isNew, actorId: message?.senderId});
+                // ChatsServer.getSocketIO().emit('message:send', conversation._id, {...message,});
+            }
+
+            return {conversation, message};
+        });
     };
-    // send email
-    await publishDirectMessage(
-      chatChannel,
-      'jobber-order-notification',
-      'order-email',
-      JSON.stringify(emailMessageDetails),
-      'Order email sent to notification service.'
-    );
-  }
-  socketIOChatObject.emit('message received', message);
-  return message;
-};
 
-const getConversation = async (sender: string, receiver: string): Promise<IConversationDocument[]> => {
-  const query = {
-    $or: [
-      { senderUsername: sender, receiverUsername: receiver },
-      { senderUsername: receiver, receiverUsername: sender },
-    ]
-  };
-  const conversation: IConversationDocument[] = await ConversationModel.aggregate([{ $match: query }]);
-  return conversation;
-};
+    // Tạo message trong conversation
+    createMessage = async (
+        conversationId: string,
+        payload: CreateMessageInput,
+        file?: Express.Multer.File,
+    ) => {
+        return runInTransaction(await database.getConnection(), async (session) => {
+            const conversation = await ConversationModel.findById(conversationId).session(session);
+            if (!conversation) {
+                throw new Error('Conversation not found');
+            }
+            if (!conversation.participants.includes(payload.senderId)) {
+                throw new Error('Sender is not a participant of the conversation');
+            }
 
-const getUserConversationList = async (username: string): Promise<IMessageDocument[]> => {
-  const query = {
-    $or: [
-      { senderUsername: username },
-      { receiverUsername: username },
-    ]
-  };
-  const messages: IMessageDocument[] = await MessageModel.aggregate([
-    { $match: query },
-    {
-      $group: {
-        _id: '$conversationId',
-        result: { $top: { output: '$$ROOT', sortBy: { createdAt: -1 } } }
-      }
-    },
-    {
-      $project: {
-        _id: '$result._id',
-        conversationId: '$result.conversationId',
-        sellerId: '$result.sellerId',
-        buyerId: '$result.buyerId',
-        receiverUsername: '$result.receiverUsername',
-        receiverPicture: '$result.receiverPicture',
-        senderUsername: '$result.senderUsername',
-        senderPicture: '$result.senderPicture',
-        body: '$result.body',
-        file: '$result.file',
-        gigId: '$result.gigId',
-        isRead: '$result.isRead',
-        hasOffer: '$result.hasOffer',
-        createdAt: '$result.createdAt'
-      }
-    }
-  ]);
-  return messages;
-};
+            // --- Logic Upload File ---
+            let uploadedFile;
+            if (payload.type === MessageType.MEDIA && file) {
+                const randomBytes: Buffer = crypto.randomBytes(20);
+                const randomCharacters: string = randomBytes.toString('hex');
+                uploadedFile = await uploadCloudinary({
+                    file,
+                    publicId: randomCharacters,
+                    resourceType: 'auto',
+                    folder: 'joblance/chats',
+                    downloadable: true
+                });
+                if (!uploadedFile.publicId) {
+                    throw new UploadFileError({
+                        clientMessage: 'Upload file error',
+                        operation: 'message:upload-file',
+                        context: {filename: file.originalname}
+                    });
+                }
+            }
 
-const getMessages = async (sender: string, receiver: string): Promise<IMessageDocument[]> => {
-  const query = {
-    $or: [
-      { senderUsername: sender, receiverUsername: receiver },
-      { senderUsername: receiver, receiverUsername: sender },
-    ]
-  };
-  const messages: IMessageDocument[] = await MessageModel.aggregate([
-    { $match: query },
-    { $sort: { createdAt: 1 } }
-  ]);
-  return messages;
-};
+            // Tạo message
+            const message = (await MessageModel.create([{
+                conversationId,
+                ...payload,
+                content: uploadedFile?.secureUrl ?? payload.content,
+                attachments: uploadedFile ? [uploadedFile] : undefined
+            }], {session}))[0];
 
-const getUserMessages = async (messageConversationId: string): Promise<IMessageDocument[]> => {
-  const messages: IMessageDocument[] = await MessageModel.aggregate([
-    { $match: { conversationId: messageConversationId } },
-    { $sort: { createdAt: 1 } }
-  ]);
-  return messages;
-};
+            // Cập nhật lastMessage SỬ DỤNG .set() để đảm bảo Mongoose nhận biết thay đổi
+            conversation.set('lastMessage', {
+                _id: message._id,
+                content: message.type === MessageType.MEDIA ? '📎 Attachment' : message.content,
+                senderId: message.senderId,
+                timestamp: message.timestamp, // Sử dụng kiểu Date/String tương ứng
+            });
 
-const updateOffer = async (messageId: string, type: string): Promise<IMessageDocument> => {
-  const message: IMessageDocument = await MessageModel.findOneAndUpdate(
-    { _id: messageId },
-    {
-      $set: {
-        [`offer.${type}`]: true
-      }
-    },
-    { new: true }
-  ) as IMessageDocument;
-  return message;
-};
+            // Tăng unreadCounts cho participant khác
+            conversation.participants.forEach((userId) => {
+                if (userId !== message.senderId) {
+                    const currentCount = (conversation.unreadCounts as Map<string, number>).get(userId) || 0;
+                    (conversation.unreadCounts as Map<string, number>).set(userId, currentCount + 1);
+                    // Dùng markModified để đảm bảo Mongoose nhận biết thay đổi trên Map
+                    conversation.markModified('unreadCounts');
+                }
+            });
 
-const markMessageAsRead = async (messageId: string): Promise<IMessageDocument> => {
-  const message: IMessageDocument = await MessageModel.findOneAndUpdate(
-    { _id: messageId },
-    {
-      $set: {
-        isRead: true
-      }
-    },
-    { new: true }
-  ) as IMessageDocument;
-  socketIOChatObject.emit('message updated', message);
-  return message;
-};
+            await conversation.save({session});
 
-const markManyMessagesAsRead = async (receiver: string, sender: string, messageId: string): Promise<IMessageDocument> => {
-  await MessageModel.updateMany(
-    { senderUsername: sender, receiverUsername: receiver, isRead: false },
-    {
-      $set: {
-        isRead: true
-      }
-    },
-  ) as IMessageDocument;
-  const message: IMessageDocument = await MessageModel.findOne({ _id: messageId }).exec() as IMessageDocument;
-  socketIOChatObject.emit('message updated', message);
-  return message;
-};
+            // Emit socket
+            await publishNewMessage({message, conversation, actorId: message.senderId});
+            // ChatsServer.getSocketIO().emit('message:send', conversationId, message);
 
-export {
-  createConversation,
-  addMessage,
-  getConversation,
-  getUserConversationList,
-  getMessages,
-  getUserMessages,
-  updateOffer,
-  markMessageAsRead,
-  markManyMessagesAsRead
-};
+            return {message, conversation};
+        });
+    };
+
+    // Lấy conversation theo ID
+    getConversationById = async (conversationId: string): Promise<IConversationDocument | null> => {
+        return ConversationModel.findById(conversationId).lean();
+    };
+
+    // Lấy tất cả conversation của user, sắp xếp theo lastMessage/updatedAt
+    getCurrentUserConversations = async (
+        userId: string | undefined,
+        query: QueryConversationInput
+    ): Promise<IConversationDocument[] | null> => {
+        if (!userId) return [];
+
+        const {lastTimestamp, limit = 0} = query;
+
+        const filter: Record<string, unknown> = {
+            participants: userId,
+        };
+
+        if (lastTimestamp) {
+            filter['lastMessage.timestamp'] = {$lt: (new Date(lastTimestamp)).toISOString()};
+        }
+
+        return ConversationModel.find(filter)
+            .sort({'lastMessage.timestamp': -1, updatedAt: -1}) // Ưu tiên hội thoại mới nhất
+            .limit(limit)
+            .lean();
+    };
+
+
+    // Đánh dấu tin nhắn trong conversation đã đọc cho user
+    readConversationMessages = async (userId: string | undefined, conversationId: string) => {
+        if (!userId) return;
+
+        return runInTransaction(await database.getConnection(), async (session) => {
+            // Tối ưu: Chỉ cần tìm Conversation ID và kiểm tra participant, không cần load toàn bộ document
+            const conversation = await ConversationModel.findOne({
+                _id: conversationId,
+                participants: {$in: [userId]}
+            }).session(session);
+
+            if (!conversation) return;
+
+            const readAt = new Date().toISOString();
+
+            // Update messages read status
+            await MessageModel.updateMany(
+                {conversationId, senderId: {$ne: userId}},
+                {$set: {read: true, readAt: readAt}}
+            ).session(session);
+
+            // Reset unreadCounts cho user
+            (conversation.unreadCounts as Map<string, number>).set(userId, 0);
+            conversation.markModified('unreadCounts'); // Bắt buộc phải có khi thao tác với Map
+            await conversation.save({session});
+
+            // Notify client
+            await publishReadEvent({
+                actorId: userId,
+                conversation: conversation,
+                readUpToMessageId: conversation.lastMessage?._id,
+                readAt: readAt
+            });
+
+            return {
+                conversation: conversation.toJSON(), readAt: readAt,
+            };
+        });
+    };
+
+    // Lấy tin nhắn trong conversation, hỗ trợ phân trang theo lastTimestamp
+    getMessagesInConversation = async (
+        userId: string | undefined,
+        conversationId: string,
+        query: QueryMessageInput,
+    ): Promise<IMessageDocument[]> => {
+        if (!userId) return [];
+
+        const conversation = await ConversationModel.findOne({
+            _id: conversationId,
+            participants: {$in: [userId]},
+        });
+
+        if (!conversation) return [];
+
+        const filter: Record<string, unknown> = {conversationId};
+        if (query?.lastTimestamp) {
+            filter.timestamp = {$lt: (new Date(query.lastTimestamp)).toISOString()};
+        }
+
+        console.log(filter);
+
+        const messages = await MessageModel.find(filter)
+            .sort({timestamp: -1})
+            .limit(query.limit)
+            .lean();
+
+        return messages;
+    };
+
+}
+
+export const messageService = new MessageService();

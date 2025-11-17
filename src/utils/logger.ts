@@ -1,3 +1,3 @@
 import { Logger } from '@hiep20012003/joblance-shared';
 
-export const AppLogger: Logger = new Logger('auth-service');
+export const AppLogger: Logger = new Logger('chat-service');
