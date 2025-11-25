@@ -8,7 +8,7 @@ class HealthRoutes {
   }
 
   public routes(): Router {
-    this.router.get('/health', new HealthController().health);
+    this.router.get('/chat-health', new HealthController().health);
     return this.router;
   }
 }
